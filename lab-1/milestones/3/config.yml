@@ -1,0 +1,151 @@
+version: 2.1
+
+orbs:
+  browser-tools: circleci/browser-tools@1.4.8
+
+commands:
+  run-pytest:
+    description: "Run PyTest"
+    parameters:
+      requirements-path:
+        type: string
+      pytest-args:
+        type: string
+        default: "--verbose"
+    steps:
+      - checkout
+      - run:
+          name: Pip Install Testing Requirements
+          command: pip install -r << parameters.requirements-path >>
+      - run:
+          name: Make Directory for Test Results
+          command: mkdir test-results
+      - run:
+          name: Run PyTest Test Suite
+          command: pytest << parameters.pytest-args >>
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+
+  save-docker-image:
+    description: "Saves a Docker image for future Jobs"
+    steps:
+      - run: mkdir -p /tmp/docker-images/
+      - run:
+          name: Saving Docker Image
+          command: docker save --output /tmp/docker-images/${DOCKER_IMAGE}-$(docker version -f {{.Server.Arch}})-${CIRCLE_SHA1}.tar ${DOCKER_IMAGE}:${CIRCLE_SHA1}
+      - run: ls -lah /tmp/docker-images/
+      - persist_to_workspace:
+          root: /tmp
+          paths:
+            - docker-images/*
+      - run: rm -rf /tmp/docker-images/
+
+  load-docker-image:
+    description: "Loads a Docker image"
+    steps:
+      - run: ls -lah /tmp/
+      - attach_workspace:
+          at: /tmp
+      - run: ls -lah /tmp/docker-images/
+      - run:
+            name: Loading Docker Image
+            command: docker load --input /tmp/docker-images/${DOCKER_IMAGE}-$(docker version -f {{.Server.Arch}})-${CIRCLE_SHA1}.tar
+
+  testing-docker-image:
+    description: "Launches tests against a Docker image"
+    steps:
+      - checkout
+      - run:
+          name: Install goss
+          command: |
+            # rather than give internet scripts SU rights, we install to local user bin and add to path
+            export GOSS_DST=~/bin
+            export PATH=$PATH:~/bin
+            export GOSS_OPTS="--format junit"
+            curl -fsSL https://goss.rocks/install | sh
+            goss -version
+      - run:
+          name: Make Directory for Goss Results
+          command: mkdir goss-results
+      - run:
+          name: Run dgoss Test
+          command: |
+            export GOSS_OPTS="--format junit"
+            dgoss run -p 8080:8080 ${DOCKER_IMAGE}:${CIRCLE_SHA1}  > ./goss-results/report.xml
+      - store_test_results:
+          path: goss-results
+      - store_artifacts:
+          path: goss-results
+
+  build:
+    description: "Build Docker image via Build Tools"
+    steps:
+      - checkout
+      - run:
+          name: Set Version
+          command: |
+            echo "export VERSION=$(cat VERSION)" >> $BASH_ENV
+            source $BASH_ENV 
+      - run:
+          name: Build Docker Image
+          command: docker build -f Dockerfile -t ${DOCKER_IMAGE}:${CIRCLE_SHA1} --build-arg VERSION=${VERSION} --build-arg CIRCLE_BUILD_URL=${CIRCLE_BUILD_URL} --build-arg CIRCLE_SHA1=${CIRCLE_SHA1} --build-arg CIRCLE_USERNAME=${CIRCLE_USERNAME} --build-arg CIRCLE_BUILD_NUM=${CIRCLE_BUILD_NUM} .
+
+
+executors:
+  browsers-python:
+    docker:
+      - image: cimg/python:3.9-browsers
+
+
+jobs:
+  test-demo:
+    executor: browsers-python
+    steps:
+      - browser-tools/install-chrome
+      - browser-tools/install-chromedriver
+      - run:
+          command: |
+            google-chrome --version
+            chromedriver --version
+          name: Check install
+      - run-pytest:
+          requirements-path: "./demo/requirements/testing.txt"
+          pytest-args: "--live-server-port 8080 --verbose --junitxml=test-results/junit.xml"
+      
+  build-image:
+    machine:
+      image: ubuntu-2204:current
+      docker_layer_caching: true
+    resource_class: large
+    steps:
+      - checkout
+      - build
+      - save-docker-image
+    environment:
+      DOCKER_IMAGE: multi-arch-circleci-demo
+
+  test-image:
+    machine:
+      image: ubuntu-2204:current
+    steps:
+      - checkout
+      - load-docker-image
+      - testing-docker-image
+    environment:
+      DOCKER_IMAGE: multi-arch-circleci-demo
+      GOSS_SLEEP: 10
+
+
+workflows:
+  demo:
+    jobs:
+      - test-demo:
+          name: "Testing Python Code"
+      - build-image:
+          name: "Building Container Image"
+      - test-image:
+          name: "Testing Container Image"
+          requires:
+            - "Building Container Image"

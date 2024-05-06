@@ -1,0 +1,414 @@
+Description: |
+  AWS Ambassador: Create various services for CircleCI's first lab. The primary AWS resources to be created are 
+  ECR public registry, ECS Cluster, Application Load Balancer, OIDC Provider, IAM Roles and security group.  
+Parameters:
+  OrgId:
+    Type: String
+    Description: CircleCI organization id (UUID)
+    MinLength: 36 # must be formatted with hyphens
+    MaxLength: 36
+  CertificateThumbprint:
+    Type: String
+    Default: 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+    Description: Thumbprint of the Certificate for oidc.circleci.com (SHA1)
+    AllowedPattern: ^[0-9a-fA-F]*$ # hexadecimal
+    MinLength: 40
+    MaxLength: 40
+  RepositoryName:
+    Type: String
+    Description: "Name of the ECR Public Repository"
+    Default: "ambassador"
+  ClusterName:
+    Type: String
+    Description: "Name of the ECS Cluster"
+    Default: "ambassador"
+  LoadBalancerName:
+    Type: String
+    Description: "Name of the Application Load Balancer"
+    Default: "ambassador"
+  SecurityGroupName:
+    Type: String
+    Description: "Name of the EC2 Security Group"
+    Default: "ambassador"
+  RoleName:
+    Type: String
+    Description: "Name of the IAM Role"
+    Default: "ambassador"
+  ECSTaskExecutionRole:
+    Type: String
+    Description: "Name of the ECS Task Execution Role"
+    Default: "ecsTaskExecutionRoleAmbassador"
+  VpcID:
+    Type: AWS::EC2::VPC::Id
+    Description: "ID of the VPC to be used"
+  SubnetIDs:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: "IDs of the Subnets to be used"
+Resources:
+  IdentityProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      ClientIdList:
+        - !Ref OrgId
+      Url: !Sub 'https://oidc.circleci.com/org/${OrgId}'
+      ThumbprintList:
+        - !Ref CertificateThumbprint
+
+  IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      RoleName: !Ref RoleName
+      Description: Allow CircleCI jobs authenticated through OIDC to manage AWS resources
+      AssumeRolePolicyDocument: !Sub
+        - |
+          {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Federated": "${IdPArn}"
+                  },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringLike": {
+                      "oidc.circleci.com/org/${OrgId}:sub": "org/${OrgId}/project/*/user/*"
+                    }
+                  }
+                }
+              ]
+          }
+        - IdPArn: !GetAtt IdentityProvider.Arn
+          OrgId: !Ref OrgId
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
+        - "arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+        - "arn:aws:iam::aws:policy/AmazonElasticContainerRegistryPublicFullAccess"
+
+  ECSRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      Path: "/"
+      RoleName: !Ref ECSTaskExecutionRole
+      AssumeRolePolicyDocument: "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Sid\":\"\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+      MaxSessionDuration: 3600
+      ManagedPolicyArns: 
+        - "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+
+  ECRPublicRepository:
+    Type: "AWS::ECR::PublicRepository"
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      RepositoryName: !Ref RepositoryName
+      RepositoryCatalogData: 
+          UsageText: "AWS Ambassador - Lab 1 - CircleCI"
+          AboutText: "AWS Ambassador - Lab 1 - CircleCI"
+
+  EC2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      GroupDescription: "Allow port 80 and 8080 for any inbound IP"
+      GroupName: !Ref SecurityGroupName
+      VpcId: !Ref VpcID
+      SecurityGroupIngress: 
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 80
+          IpProtocol: "tcp"
+          ToPort: 80
+        - CidrIpv6: "::/0"
+          FromPort: 80
+          IpProtocol: "tcp"
+          ToPort: 80
+        - CidrIp: "0.0.0.0/0"
+          FromPort: 8080
+          IpProtocol: "tcp"
+          ToPort: 8080
+        - CidrIpv6: "::/0"
+          FromPort: 8080
+          IpProtocol: "tcp"
+          ToPort: 8080
+      SecurityGroupEgress: 
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "-1"
+
+  ECSCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      ClusterName: !Ref ClusterName
+      CapacityProviders: 
+        - "FARGATE"
+        - "FARGATE_SPOT"
+
+  ECSTaskDefinitionAMD:
+    Type: "AWS::ECS::TaskDefinition"
+    DependsOn:
+      - ECSRole
+    Properties:
+      Tags: 
+        - Key: "CreatedBy"
+          Value: "CircleCI"
+      ContainerDefinitions: 
+        - Essential: true
+          Image: "public.ecr.aws/o5b1w9d8/ambassador:latest"
+          Name: !Sub "${ClusterName}-amd"
+          PortMappings: 
+            - ContainerPort: 8080
+              HostPort: 8080
+              Protocol: "tcp"
+              appProtocol: "http"
+      RuntimePlatform:
+        CpuArchitecture: "X86_64"
+        OperatingSystemFamily: "LINUX"
+      Family: !Sub "${ClusterName}-amd"
+      ExecutionRoleArn: !Ref ECSRole
+      NetworkMode: "awsvpc"
+      RequiresCompatibilities: 
+        - "FARGATE"
+      Cpu: "512"
+      Memory: "1024"
+
+  ECSTaskDefinitionARM:
+    Type: "AWS::ECS::TaskDefinition"
+    DependsOn:
+      - ECSRole
+    Properties:
+        Tags: 
+          - Key: "CreatedBy"
+            Value: "CircleCI"
+        ContainerDefinitions: 
+          - Essential: true
+            Image: "public.ecr.aws/o5b1w9d8/ambassador:latest"
+            Name: !Sub "${ClusterName}-arm"
+            PortMappings: 
+              - ContainerPort: 8080
+                HostPort: 8080
+                Protocol: "tcp"
+                appProtocol: "http"
+        RuntimePlatform:
+          CpuArchitecture: "ARM64"
+          OperatingSystemFamily: "LINUX"
+        Family: !Sub "${ClusterName}-arm"
+        ExecutionRoleArn: !Ref ECSRole
+        NetworkMode: "awsvpc"
+        RequiresCompatibilities: 
+          - "FARGATE"
+        Cpu: "512"
+        Memory: "1024"
+
+  ElasticLoadBalancingV2LoadBalancer:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+        Tags: 
+          - Key: "CreatedBy"
+            Value: "CircleCI"
+        Name: !Ref LoadBalancerName
+        Scheme: "internet-facing"
+        Type: "application"
+        Subnets: !Ref SubnetIDs
+        SecurityGroups: 
+          - !Ref EC2SecurityGroup
+        IpAddressType: "ipv4"
+        LoadBalancerAttributes: 
+          - 
+            Key: "access_logs.s3.enabled"
+            Value: "false"
+          - 
+            Key: "idle_timeout.timeout_seconds"
+            Value: "60"
+          - 
+            Key: "deletion_protection.enabled"
+            Value: "false"
+          - 
+            Key: "routing.http2.enabled"
+            Value: "true"
+          - 
+            Key: "routing.http.drop_invalid_header_fields.enabled"
+            Value: "false"
+          - 
+            Key: "routing.http.xff_client_port.enabled"
+            Value: "false"
+          - 
+            Key: "routing.http.preserve_host_header.enabled"
+            Value: "false"
+          - 
+            Key: "routing.http.xff_header_processing.mode"
+            Value: "append"
+          - 
+            Key: "load_balancing.cross_zone.enabled"
+            Value: "true"
+          - 
+            Key: "routing.http.desync_mitigation_mode"
+            Value: "defensive"
+          - 
+            Key: "client_keep_alive.seconds"
+            Value: "3600"
+          - 
+            Key: "waf.fail_open.enabled"
+            Value: "false"
+          - 
+            Key: "routing.http.x_amzn_tls_version_and_cipher_suite.enabled"
+            Value: "false"
+          - 
+            Key: "connection_logs.s3.enabled"
+            Value: "false"
+
+  ElasticLoadBalancingV2TargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    DependsOn:
+      - ElasticLoadBalancingV2LoadBalancer
+    Properties:
+        Tags: 
+          - Key: "CreatedBy"
+            Value: "CircleCI"
+        HealthCheckIntervalSeconds: 30
+        HealthCheckPath: "/"
+        Port: 80
+        Protocol: "HTTP"
+        HealthCheckPort: "traffic-port"
+        HealthCheckProtocol: "HTTP"
+        HealthCheckTimeoutSeconds: 5
+        UnhealthyThresholdCount: 2
+        TargetType: "ip"
+        Matcher: 
+            HttpCode: "200"
+        HealthyThresholdCount: 5
+        VpcId: !Ref VpcID
+        Name: !Sub "${LoadBalancerName}-targetgroup"
+        HealthCheckEnabled: true
+        TargetGroupAttributes: 
+          - Key: "target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage"
+            Value: "off"
+          - Key: "deregistration_delay.timeout_seconds"
+            Value: "300"
+          - Key: "stickiness.type"
+            Value: "lb_cookie"
+          - Key: "stickiness.lb_cookie.duration_seconds"
+            Value: "86400"
+          - Key: "slow_start.duration_seconds"
+            Value: "0"
+          - Key: "stickiness.app_cookie.duration_seconds"
+            Value: "86400"
+          - Key: "target_group_health.dns_failover.minimum_healthy_targets.percentage"
+            Value: "off"
+          - Key: "load_balancing.cross_zone.enabled"
+            Value: "use_load_balancer_configuration"
+          - Key: "load_balancing.algorithm.type"
+            Value: "round_robin"
+          - Key: "target_group_health.unhealthy_state_routing.minimum_healthy_targets.count"
+            Value: "1"
+          - Key: "stickiness.enabled"
+            Value: "false"
+          - Key: "target_group_health.dns_failover.minimum_healthy_targets.count"
+            Value: "1"
+          - Key: "load_balancing.algorithm.anomaly_mitigation"
+            Value: "off"
+          - Key: "stickiness.app_cookie.cookie_name"
+            Value: ""
+
+  ElasticLoadBalancingV2Listener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    DependsOn:
+      - ElasticLoadBalancingV2TargetGroup
+      - ElasticLoadBalancingV2LoadBalancer
+    Properties:
+        LoadBalancerArn: !Ref ElasticLoadBalancingV2LoadBalancer
+        Port: 80
+        Protocol: "HTTP"
+        DefaultActions: 
+          - TargetGroupArn: !Ref ElasticLoadBalancingV2TargetGroup
+            Type: "forward"
+
+  ECSServiceAMD:
+    Type: "AWS::ECS::Service"
+    DependsOn:
+      - ElasticLoadBalancingV2TargetGroup
+      - ElasticLoadBalancingV2Listener
+    Properties:
+        Tags: 
+          - Key: "CreatedBy"
+            Value: "CircleCI"
+        ServiceName: !Sub "${ClusterName}-amd"
+        Cluster: !GetAtt ECSCluster.Arn
+        LoadBalancers: 
+          - TargetGroupArn: !Ref ElasticLoadBalancingV2TargetGroup
+            ContainerName: !Sub "${ClusterName}-amd"
+            ContainerPort: 8080
+        DesiredCount: 1
+        PlatformVersion: "LATEST"
+        TaskDefinition: !Ref ECSTaskDefinitionAMD
+        DeploymentConfiguration: 
+            MaximumPercent: 200
+            MinimumHealthyPercent: 100
+            DeploymentCircuitBreaker: 
+                Enable: false
+                Rollback: false
+        NetworkConfiguration: 
+            AwsvpcConfiguration: 
+                AssignPublicIp: "ENABLED"
+                SecurityGroups: 
+                  - !Ref EC2SecurityGroup
+                Subnets: !Ref SubnetIDs
+        HealthCheckGracePeriodSeconds: 0
+        SchedulingStrategy: "REPLICA"
+        DeploymentController: 
+            Type: "ECS"
+        CapacityProviderStrategy: 
+          - CapacityProvider: "FARGATE"
+            Weight: 1
+            Base: 0
+
+  # ECSServiceARM:
+  #   Type: "AWS::ECS::Service"
+  #   DependsOn:
+  #     - ElasticLoadBalancingV2TargetGroup
+  #     - ElasticLoadBalancingV2Listener
+  #   Properties:
+  #       Tags: 
+  #         - Key: "CreatedBy"
+  #           Value: "CircleCI"
+  #       ServiceName: !Sub "${ClusterName}-arm"
+  #       Cluster: !GetAtt ECSCluster.Arn
+  #       LoadBalancers: 
+  #         - TargetGroupArn: !Ref ElasticLoadBalancingV2TargetGroup
+  #           ContainerName: !Sub "${ClusterName}-arm"
+  #           ContainerPort: 8080
+  #       DesiredCount: 1
+  #       PlatformVersion: "LATEST"
+  #       TaskDefinition: !Ref ECSTaskDefinitionARM
+  #       DeploymentConfiguration: 
+  #           MaximumPercent: 200
+  #           MinimumHealthyPercent: 100
+  #           DeploymentCircuitBreaker: 
+  #               Enable: false
+  #               Rollback: false
+  #       NetworkConfiguration: 
+  #           AwsvpcConfiguration: 
+  #               AssignPublicIp: "ENABLED"
+  #               SecurityGroups: 
+  #                 - !Ref EC2SecurityGroup
+  #               Subnets: !Ref SubnetIDs
+  #       HealthCheckGracePeriodSeconds: 0
+  #       SchedulingStrategy: "REPLICA"
+  #       DeploymentController: 
+  #           Type: "ECS"
+  #       CapacityProviderStrategy: 
+  #         - CapacityProvider: "FARGATE"
+  #           Weight: 1
+  #           Base: 0

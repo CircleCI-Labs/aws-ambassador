@@ -1,0 +1,18 @@
+version: 2.1
+
+jobs:
+  build-image:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: large
+    steps:
+      - checkout
+      - run:
+          name: Build Docker Image
+          command: docker build -f Dockerfile -t demo:test .
+
+workflows:
+  demo:
+    jobs:
+      - build-image:
+          name: "Building Container Image"

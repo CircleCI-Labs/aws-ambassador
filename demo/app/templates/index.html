@@ -1,0 +1,12 @@
+{% extends "main.html" %}
+
+{% block title %}Jim Crowley - Demo{% endblock title %}
+
+{% block nav_name %}CircleCI Demo - AWS Ambassador Lab {% endblock nav_name %}
+
+{% block masthead_name %} {{ random_text }} {% endblock masthead_name %}
+{% block masthead_sub %}Multi-Arch Builds are Awesome! Currently running on {{ arch }}!{% endblock masthead_sub %}
+{% block masthead %}
+    {{ super() }}
+{% endblock masthead %}
+

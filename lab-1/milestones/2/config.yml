@@ -1,0 +1,74 @@
+version: 2.1
+
+commands:
+  run-pytest:
+    description: "Run PyTest"
+    parameters:
+      requirements-path:
+        type: string
+      pytest-args:
+        type: string
+        default: "--verbose"
+    steps:
+      - checkout
+      - run:
+          name: Pip Install Testing Requirements
+          command: pip install -r << parameters.requirements-path >>
+      - run:
+          name: Make Directory for Test Results
+          command: mkdir test-results
+      - run:
+          name: Run PyTest Test Suite
+          command: pytest << parameters.pytest-args >>
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: test-results
+
+  build:
+    description: "Build Docker image via Build Tools"
+    steps:
+      - checkout
+      - run:
+          name: Set Version
+          command: |
+            echo "export VERSION=$(cat VERSION)" >> $BASH_ENV
+            source $BASH_ENV 
+      - run:
+          name: Build Docker Image
+          command: docker build -f Dockerfile -t ${DOCKER_IMAGE}:${CIRCLE_SHA1} --build-arg VERSION=${VERSION} --build-arg CIRCLE_BUILD_URL=${CIRCLE_BUILD_URL} --build-arg CIRCLE_SHA1=${CIRCLE_SHA1} --build-arg CIRCLE_USERNAME=${CIRCLE_USERNAME} --build-arg CIRCLE_BUILD_NUM=${CIRCLE_BUILD_NUM} .
+
+
+executors:
+  browsers-python:
+    docker:
+      - image: cimg/python:3.9-browsers
+
+
+jobs:
+  test-demo:
+    executor: browsers-python
+    steps:
+      - run-pytest:
+          requirements-path: "./demo/requirements/testing.txt"
+          pytest-args: "--live-server-port 8080 --verbose --junitxml=test-results/junit.xml"
+      
+  build-image:
+    machine:
+      image: ubuntu-2204:current
+      docker_layer_caching: true
+    resource_class: large
+    steps:
+      - checkout
+      - build
+    environment:
+      DOCKER_IMAGE: multi-arch-circleci-demo
+
+
+workflows:
+  demo:
+    jobs:
+      - test-demo:
+          name: "Testing Python Code"
+      - build-image:
+          name: "Building Container Image"

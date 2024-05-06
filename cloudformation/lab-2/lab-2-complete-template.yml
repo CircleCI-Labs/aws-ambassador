@@ -1,0 +1,81 @@
+Description: |
+  AWS Ambassador: Create various services for CircleCI's second lab. The primary AWS resources to be created are 
+  EC2 and security group.  
+Parameters:
+  EC2Name:
+    Type: String
+    Description: "Name of the EC2 Instance"
+    Default: "ambassador-vm"
+  SecurityGroupName:
+    Type: String
+    Description: "Name of the EC2 Security Group"
+    Default: "ambassador-vm"
+  VpcID:
+    Type: AWS::EC2::VPC::Id
+    Description: "ID of the VPC to be used"
+  SubnetID:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the Subnet to be used
+  EC2KeyPair:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+Resources:
+    EC2Instance:
+        Type: "AWS::EC2::Instance"
+        Properties:
+            ImageId: "ami-04b70fa74e45c3917"
+            InstanceType: "t2.micro"
+            KeyName: !Ref EC2KeyPair
+            SubnetId: !Ref SubnetID
+            SecurityGroupIds: 
+              - !Ref EC2SecurityGroup
+            BlockDeviceMappings: 
+              - DeviceName: "/dev/sda1"
+                Ebs: 
+                    VolumeSize: 8
+                    VolumeType: "gp3"
+                    DeleteOnTermination: true
+            Tags: 
+              - Key: "CreatedBy"
+                Value: "CircleCI"
+              - Key: "Name"
+                Value: !Ref EC2Name
+  
+    EC2SecurityGroup:
+        Type: "AWS::EC2::SecurityGroup"
+        Properties:
+            Tags: 
+              - Key: "CreatedBy"
+                Value: "CircleCI"
+            GroupDescription: "Allow port 22, 80 and 8080 for any inbound IP"
+            GroupName: !Ref SecurityGroupName
+            VpcId: !Ref VpcID
+            SecurityGroupIngress: 
+              - CidrIp: "0.0.0.0/0"
+                FromPort: 80
+                IpProtocol: "tcp"
+                ToPort: 80
+              - CidrIpv6: "::/0"
+                FromPort: 80
+                IpProtocol: "tcp"
+                ToPort: 80
+              - CidrIp: "0.0.0.0/0"
+                FromPort: 8080
+                IpProtocol: "tcp"
+                ToPort: 8080
+              - CidrIpv6: "::/0"
+                FromPort: 8080
+                IpProtocol: "tcp"
+                ToPort: 8080
+              - CidrIp: "0.0.0.0/0"
+                FromPort: 22
+                IpProtocol: "tcp"
+                ToPort: 22
+              - CidrIpv6: "::/0"
+                FromPort: 22
+                IpProtocol: "tcp"
+                ToPort: 22
+            SecurityGroupEgress: 
+              - CidrIp: "0.0.0.0/0"
+                IpProtocol: "-1"
+
